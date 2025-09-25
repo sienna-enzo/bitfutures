@@ -118,3 +118,95 @@
     (ok true) ;; Return success
   )
 )
+
+;; Claim winnings from a market
+(define-public (claim-winnings (market-id uint))
+  (let
+    (
+      (market (unwrap! (map-get? markets market-id) err-not-found)) ;; Get the market details
+      (prediction (unwrap! (map-get? user-predictions {market-id: market-id, user: tx-sender}) err-not-found)) ;; Get the user's prediction
+    )
+    (asserts! (get resolved market) err-market-closed) ;; Ensure market is resolved
+    (asserts! (not (get claimed prediction)) err-already-claimed) ;; Ensure winnings are not already claimed
+    
+    (let
+      (
+        (winning-prediction (if (> (get end-price market) (get start-price market)) "up" "down")) ;; Determine winning prediction
+        (total-stake (+ (get total-up-stake market) (get total-down-stake market))) ;; Calculate total stake
+        (winning-stake (if (is-eq winning-prediction "up") (get total-up-stake market) (get total-down-stake market))) ;; Calculate winning stake
+      )
+      (asserts! (is-eq (get prediction prediction) winning-prediction) err-invalid-prediction) ;; Ensure user's prediction is correct
+      
+      (let
+        (
+          (winnings (/ (* (get stake prediction) total-stake) winning-stake)) ;; Calculate winnings
+          (fee (/ (* winnings (var-get fee-percentage)) u100)) ;; Calculate fee
+          (payout (- winnings fee)) ;; Calculate payout
+        )
+        (try! (as-contract (stx-transfer? payout (as-contract tx-sender) tx-sender))) ;; Transfer payout to user
+        (try! (as-contract (stx-transfer? fee (as-contract tx-sender) contract-owner))) ;; Transfer fee to contract owner
+        
+        (map-set user-predictions {market-id: market-id, user: tx-sender}
+          (merge prediction {claimed: true})
+        )
+        (ok payout) ;; Return payout amount
+      )
+    )
+  )
+)
+
+;; Getter functions
+
+;; Get market details
+(define-read-only (get-market (market-id uint))
+  (map-get? markets market-id)
+)
+
+;; Get user prediction details
+(define-read-only (get-user-prediction (market-id uint) (user principal))
+  (map-get? user-predictions {market-id: market-id, user: user})
+)
+
+;; Get contract balance
+(define-read-only (get-contract-balance)
+  (stx-get-balance (as-contract tx-sender))
+)
+
+;; Admin functions
+
+;; Set oracle address
+(define-public (set-oracle-address (new-address principal))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only) ;; Ensure only the owner can set the oracle address
+    (asserts! (is-eq new-address new-address) err-invalid-parameter) ;; Ensure new-address is not an empty principal
+    (ok (var-set oracle-address new-address)) ;; Set the new oracle address
+  )
+)
+
+;; Set minimum stake amount
+(define-public (set-minimum-stake (new-minimum uint))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only) ;; Ensure only the owner can set the minimum stake
+    (asserts! (> new-minimum u0) err-invalid-parameter) ;; Ensure new-minimum is greater than zero
+    (ok (var-set minimum-stake new-minimum)) ;; Set the new minimum stake
+  )
+)
+
+;; Set fee percentage
+(define-public (set-fee-percentage (new-fee uint))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only) ;; Ensure only the owner can set the fee percentage
+    (asserts! (<= new-fee u100) err-invalid-parameter) ;; Ensure new-fee is between 0 and 100
+    (ok (var-set fee-percentage new-fee)) ;; Set the new fee percentage
+  )
+)
+
+;; Withdraw fees from the contract
+(define-public (withdraw-fees (amount uint))
+  (begin
+    (asserts! (is-eq tx-sender contract-owner) err-owner-only) ;; Ensure only the owner can withdraw fees
+    (asserts! (<= amount (stx-get-balance (as-contract tx-sender))) err-insufficient-balance) ;; Ensure amount is available in contract balance
+    (try! (as-contract (stx-transfer? amount (as-contract tx-sender) contract-owner))) ;; Transfer amount to contract owner
+    (ok amount) ;; Return withdrawn amount
+  )
+)
